@@ -1,0 +1,108 @@
+# -----------------------------
+# Python & FastAPI .gitignore
+# -----------------------------
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# FastAPI specific (if using Uvicorn, Gunicorn, etc.)
+*.pid
+*.log
+
+# Environment variables and secrets
+*.env
+.env.*
+!example.env  # keep example env files tracked
+
+# Build & packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# MyPy, Pyre, and Pylint
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.pylint.d/
+
+# Logs & databases
+*.log
+*.sqlite3
+*.db
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Static and media files (if generated)
+staticfiles/
+media/
+uploads/
+tmp/
+
+# If using poetry
+poetry.lock
+
+# If using pipenv
+Pipfile.lock
+
+# If using Docker
+*.pid
+*.tar
+docker-compose.override.yml
+
+# If using pytest cache
+.pytest_cache/
+
+# If using celery
+celerybeat-schedule
+celerybeat.pid
+
+# If using alembic for migrations
+alembic.ini
+migrations/versions/*.pyc
+
+# Ignore coverage reports
+.coverage
+htmlcov/
