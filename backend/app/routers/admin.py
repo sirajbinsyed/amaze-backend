@@ -70,8 +70,9 @@ async def get_dashboard_stats(current_user: dict = Depends(require_roles(["admin
 @router.get("/staff", response_model=List[UserPublic])
 async def list_staffs(current_user: dict = Depends(require_roles(["admin"]))):
     """
-    Admin-only endpoint to list all staff members.
+    Admin-only endpoint to list all *active* staff members.
     Joins 'staff_users' and 'staff_credentials' tables.
+    Only returns records where both statuses are 'active'.
     """
     staffs = await fetch_all(
         """
@@ -85,6 +86,7 @@ async def list_staffs(current_user: dict = Depends(require_roles(["admin"]))):
             su.staff_name
         FROM staff_credentials sc
         JOIN staff_users su ON sc.staff_id = su.id
+        WHERE sc.status = 'active' AND su.status = 'active'
         ORDER BY sc.created_at DESC
         """,
         None
@@ -239,9 +241,9 @@ async def create_staff(
         is_active=(created_user["status"] == "active")
     )
     
-@router.put("/staff/{staff_id}", response_model=UserPublic)
+@router.put("/staff/{cred_id}", response_model=UserPublic)
 async def update_staff(
-    staff_id: int,
+    cred_id: int,
     staff_name: Optional[str] = Body(None),
     image: Optional[str] = Body(None),
     role: Optional[str] = Body(None),
@@ -253,34 +255,47 @@ async def update_staff(
 ):
     """
     Admin-only endpoint to edit/update a staff member.
-    Updates 'staff_users' and/or 'staff_credentials' tables as needed.
+    Updates both staff_users and staff_credentials using cred_id.
     """
-    # Check if staff exists
+
+    print(f"🔹 Attempting to update cred_id={cred_id}")
+
+    # Fetch all credentials (debug)
+    existing_all_creds = await fetch_all("SELECT id, staff_id FROM staff_credentials")
+    print(f"this is all creds: {existing_all_creds}")
+
+    # ✅ Step 1: Get credentials by ID (not staff_id)
+    existing_creds = await fetch_one(
+        "SELECT id, staff_id, username FROM staff_credentials WHERE id = %s",
+        (cred_id,)
+    )
+
+    if not existing_creds:
+        print(f"❌ No credentials found for id={cred_id}")
+        raise HTTPException(status_code=404, detail=f"No credentials found for id {cred_id}")
+
+    staff_id = existing_creds["staff_id"]  # extract linked staff_id
+    print(f"✅ Found linked staff_id={staff_id} for cred_id={cred_id}")
+
+    # ✅ Step 2: Check if staff exists
     existing_staff = await fetch_one(
-        "SELECT id FROM staff_users WHERE id = %s",
+        "SELECT id, staff_name FROM staff_users WHERE id = %s",
         (staff_id,)
     )
     if not existing_staff:
-        raise HTTPException(status_code=404, detail="Staff not found")
+        print(f"❌ Staff ID {staff_id} not found in staff_users")
+        raise HTTPException(status_code=404, detail=f"Staff ID {staff_id} not found")
 
-    existing_creds = await fetch_one(
-        "SELECT id, username FROM staff_credentials WHERE staff_id = %s",
-        (staff_id,)
-    )
-    if not existing_creds:
-        raise HTTPException(status_code=404, detail="Staff credentials not found")
-
-    # Validate status if provided
+    # ✅ Step 3: Validate fields
     if status is not None and status not in ["active", "inactive"]:
         raise HTTPException(status_code=400, detail="Status must be 'active' or 'inactive'")
 
-    # Validate password if provided
+    hashed_password = None
     if password is not None:
         if len(password.encode("utf-8")) > 72:
             raise HTTPException(status_code=400, detail="Password cannot exceed 72 bytes")
         hashed_password = hash_password(password[:72])
 
-    # Check username uniqueness if changing
     if username is not None and username != existing_creds["username"]:
         dup_check = await fetch_one(
             "SELECT id FROM staff_credentials WHERE username = %s",
@@ -289,9 +304,8 @@ async def update_staff(
         if dup_check:
             raise HTTPException(status_code=400, detail="Username already exists")
 
-    # Prepare updates for staff_users
-    staff_updates = []
-    staff_params = []
+    # ✅ Step 4: Prepare updates
+    staff_updates, staff_params = [], []
     if staff_name is not None:
         staff_updates.append("staff_name = %s")
         staff_params.append(staff_name)
@@ -308,13 +322,11 @@ async def update_staff(
         staff_updates.append("status = %s")
         staff_params.append(status)
 
-    # Prepare updates for staff_credentials
-    creds_updates = []
-    creds_params = []
+    creds_updates, creds_params = [], []
     if username is not None:
         creds_updates.append("username = %s")
         creds_params.append(username)
-    if password is not None:
+    if hashed_password is not None:
         creds_updates.append("password_hash = %s")
         creds_params.append(hashed_password)
     if role is not None:
@@ -324,45 +336,37 @@ async def update_staff(
         creds_updates.append("status = %s")
         creds_params.append(status)
 
-    # Execute updates if any
+    # ✅ Step 5: Execute updates
     if staff_updates:
         staff_params.append(staff_id)
-        updates_str = ", ".join(staff_updates)
         await execute(
-            f"""
-            UPDATE staff_users 
-            SET {updates_str} 
-            WHERE id = %s
-            """,
+            f"UPDATE staff_users SET {', '.join(staff_updates)} WHERE id = %s",
             tuple(staff_params)
         )
+        print(f"✅ staff_users updated for ID {staff_id}")
 
     if creds_updates:
-        creds_params.append(existing_creds["id"])
-        updates_str = ", ".join(creds_updates)
+        creds_params.append(cred_id)
         await execute(
-            f"""
-            UPDATE staff_credentials 
-            SET {updates_str} 
-            WHERE id = %s
-            """,
+            f"UPDATE staff_credentials SET {', '.join(creds_updates)} WHERE id = %s",
             tuple(creds_params)
         )
+        print(f"✅ staff_credentials updated for id={cred_id}")
 
     if not staff_updates and not creds_updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    # Fetch updated user
+    # ✅ Step 6: Fetch updated data
     updated_user = await fetch_one(
-        "SELECT id, staff_id, username, role, status, created_at FROM staff_credentials WHERE staff_id = %s",
-        (staff_id,)
+        "SELECT id, staff_id, username, role, status, created_at FROM staff_credentials WHERE id = %s",
+        (cred_id,)
     )
-
-    # Fetch updated staff_name for full_name
     updated_staff = await fetch_one(
         "SELECT staff_name FROM staff_users WHERE id = %s",
         (staff_id,)
     )
+
+    print(f"✅ Staff update successful for cred_id={cred_id}")
 
     return UserPublic(
         id=updated_user["id"],
@@ -372,36 +376,57 @@ async def update_staff(
         is_active=(updated_user["status"] == "active")
     )
 
-@router.delete("/staff/{staff_id}")
+@router.delete("/staff/{cred_id}")
 async def delete_staff(
-    staff_id: int,
+    cred_id: int,
     current_user: dict = Depends(require_roles(["admin"]))
 ):
     """
-    Admin-only endpoint to delete a staff member.
-    Deletes from both 'staff_users' and 'staff_credentials' tables.
+    Admin-only endpoint to soft delete a staff member.
+    Instead of deleting records, it sets 'status' = 'inactive'
+    in both 'staff_users' and 'staff_credentials' tables.
     """
-    # Check if staff exists
+
+    print(f"🗑️ Attempting to soft delete cred_id={cred_id}")
+
+    # Step 1: Find credentials record
+    existing_creds = await fetch_one(
+        "SELECT id, staff_id, status FROM staff_credentials WHERE id = %s",
+        (cred_id,)
+    )
+    if not existing_creds:
+        print(f"❌ No credentials found for id={cred_id}")
+        raise HTTPException(status_code=404, detail=f"No credentials found for id {cred_id}")
+
+    staff_id = existing_creds["staff_id"]
+    print(f"✅ Found linked staff_id={staff_id} for cred_id={cred_id}")
+
+    # Step 2: Update staff_credentials status to 'inactive'
+    await execute(
+        "UPDATE staff_credentials SET status = 'inactive' WHERE id = %s",
+        (cred_id,)
+    )
+    print(f"✅ staff_credentials marked inactive for cred_id={cred_id}")
+
+    # Step 3: Update staff_users status to 'inactive' if exists
     existing_staff = await fetch_one(
-        "SELECT id FROM staff_users WHERE id = %s",
+        "SELECT id, status FROM staff_users WHERE id = %s",
         (staff_id,)
     )
-    if not existing_staff:
-        raise HTTPException(status_code=404, detail="Staff not found")
+    if existing_staff:
+        await execute(
+            "UPDATE staff_users SET status = 'inactive' WHERE id = %s",
+            (staff_id,)
+        )
+        print(f"✅ staff_users marked inactive for staff_id={staff_id}")
+    else:
+        print(f"⚠️ No staff_users found for id={staff_id}")
 
-    # Delete from staff_credentials first (assuming no FK constraints prevent it)
-    await execute(
-        "DELETE FROM staff_credentials WHERE staff_id = %s",
-        (staff_id,)
-    )
-
-    # Delete from staff_users
-    await execute(
-        "DELETE FROM staff_users WHERE id = %s",
-        (staff_id,)
-    )
-
-    return {"message": "Staff deleted successfully"}
+    # Step 4: Return success response
+    return {
+        "message": f"Staff soft-deleted successfully (cred_id={cred_id}, staff_id={staff_id})",
+        "status": "inactive"
+    }
 
 
 
@@ -797,7 +822,7 @@ async def update_order(
 @router.delete("/orders/{order_id}", response_model=dict)
 async def delete_order(
     order_id: int,
-    current_user=Depends(require_roles(["project_manager"]))
+    current_user=Depends(require_roles(["admin"]))
 ):
     # Debug print
     print(f"Current user full dict: {current_user}")
